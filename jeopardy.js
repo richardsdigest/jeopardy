@@ -1,77 +1,140 @@
-
-
-const headerRow = document.getElementById("header-row");
-const gameBoard = document.getElementById("game-board");
-const restartButton = document.getElementById("restart-button");
+const NUM_CATEGORIES = 6;
+const NUM_QUESTIONS_PER_CAT = 5;
 
 let categories = [];
-let questions = [];
 
-categories = ["Category 1", "Category 2", "Category 3", "Category 4", "Category 5", "Category 6"];
-    questions = [
-        ["?", "?", "?", "?", "?", "?"],
-        ["?", "?", "?", "?", "?", "?"],
-        ["?", "?", "?", "?", "?", "?"],
-        ["?", "?", "?", "?", "?", "?"],
-        ["?", "?", "?", "?", "?", "?"],
-    ];
-async function fetchRandomCategoriesAndQuestions() {
-    try {
-        const response = await fetch('http://jservice.io/api/random?count=6');
-        if (!response.ok) {
-            throw new Error(`HTTP error! Status: ${response.status}`);
-        }
-
-        const data = await response.json();
-        const categoryIds = data.map(item => item.category_id);
-
-        const categoryPromises = categoryIds.map(categoryId =>
-            fetch(`http://jservice.io/api/category?id=${categoryId}`)
-        );
-
-        const categoryResponses = await Promise.all(categoryPromises);
-        const categoryData = await Promise.all(categoryResponses.map(response => response.json()));
-
-        const categories = categoryData.map(category => category.title);
-        const questions = categoryData.map(category => category.clues.slice(0, 5).map(clue => clue.question));
-
-        return { categories, questions };
-    } catch (error) {
-        console.error('Error fetching data:', error);
-        return { categories: [], questions: [] };
-    }
+/** Get NUM_CATEGORIES random categories from the API.
+ *
+ * Returns array of category ids.
+ */
+async function getCategoryIds() {
+  const response = await axios.get('https://rithm-jeopardy.herokuapp.com/api/random', {
+    params: { count: NUM_CATEGORIES }
+  });
+  return response.data.categories.map(cat => cat.id);
 }
 
-
-// Function to initialize the game board
-function initializeGameBoard() {
-    fetchRandomCategoriesAndQuestions();
-    headerRow.innerHTML = categories.map(category => `<th>${category}</th>`).join("");
-    gameBoard.innerHTML = questions.map(row => `<tr>${row.map(cell => `<td>${cell}</td>`).join("")}</tr>`).join("");
+/** Return object with data about a category:
+ *
+ *  Returns { title: "Math", clues: clue-array }
+ *
+ * Where clue-array is:
+ *   [
+ *      {question: "Hamlet Author", answer: "Shakespeare", showing: null},
+ *      {question: "Bell Jar Author", answer: "Plath", showing: null},
+ *      ...
+ *   ]
+ */
+async function getCategory(catId) {
+  const response = await axios.get(`https://rithm-jeopardy.herokuapp.com/api/category`, {
+    params: { id: catId }
+  });
+  let category = response.data;
+  
+  // Randomly select 5 clues per category
+  let clues = _.sampleSize(category.clues, NUM_QUESTIONS_PER_CAT).map(clue => ({
+    question: clue.question,
+    answer: clue.answer,
+    showing: null
+  }));
+  
+  return { title: category.title, clues };
 }
 
-// Function to handle cell clicks
-function handleCellClick(row, col) {
-    if (questions[row][col] === "?") {
-        questions[row][col] = `Question ${row + 1}`;
-    } else if (questions[row][col] === `Question ${row + 1}`) {
-        questions[row][col] = `Answer ${row + 1}`;
+/** Fill the HTML table#jeopardy with the categories & cells for questions.
+ *
+ * - The <thead> should be filled w/a <tr>, and a <td> for each category.
+ * - The <tbody> should be filled w/NUM_QUESTIONS_PER_CAT <tr>s,
+ *   each with a question for each category in a <td>.
+ *   (Initially, just show a "?" where the question/answer would go.)
+ */
+async function fillTable() {
+  const $thead = $('#jeopardy thead');
+  const $tbody = $('#jeopardy tbody');
+  $thead.empty();
+  $tbody.empty();
+
+  // Add category headers
+  let $tr = $('<tr>');
+  for (let catIdx = 0; catIdx < NUM_CATEGORIES; catIdx++) {
+    $tr.append($('<th>').text(categories[catIdx].title));
+  }
+  $thead.append($tr);
+
+  // Add rows for questions (initially showing ?)
+  for (let clueIdx = 0; clueIdx < NUM_QUESTIONS_PER_CAT; clueIdx++) {
+    let $tr = $('<tr>');
+    for (let catIdx = 0; catIdx < NUM_CATEGORIES; catIdx++) {
+      $tr.append($('<td>')
+        .attr('id', `${catIdx}-${clueIdx}`)
+        .text('?')
+        .on('click', handleClick));
     }
-    gameBoard.innerHTML = questions.map(row => `<tr>${row.map(cell => `<td>${cell}</td>`).join("")}</tr>`).join("");
+    $tbody.append($tr);
+  }
 }
 
-// Event listener for cell clicks
-gameBoard.addEventListener("click", (event) => {
-    const cell = event.target;
-    const col = cell.cellIndex;
-    const row = cell.parentElement.rowIndex - 1; 
-    if (row >= 0 && col >= 0) {
-        handleCellClick(row, col);
-    }
+/** Handle clicking on a clue: show the question or answer.
+ *
+ * Uses .showing property on clue to determine what to show:
+ * - if currently null, show question & set .showing to "question"
+ * - if currently "question", show answer & set .showing to "answer"
+ * - if currently "answer", ignore click
+ */
+function handleClick(evt) {
+  let id = evt.target.id;
+  let [catId, clueId] = id.split('-');
+  let clue = categories[catId].clues[clueId];
+
+  if (!clue.showing) {
+    // If clue not showing anything, show the question
+    clue.showing = 'question';
+    $(`#${catId}-${clueId}`).text(clue.question);
+  } else if (clue.showing === 'question') {
+    // If showing the question, show the answer
+    clue.showing = 'answer';
+    $(`#${catId}-${clueId}`).text(clue.answer);
+  }
+}
+
+/** Wipe the current Jeopardy board, show the loading spinner,
+ * and update the button used to fetch data.
+ */
+function showLoadingView() {
+  $('#jeopardy thead').empty();
+  $('#jeopardy tbody').empty();
+  $('#loading').show();
+}
+
+/** Remove the loading spinner and update the button used to fetch data. */
+function hideLoadingView() {
+  $('#loading').hide();
+}
+
+/** Start game:
+ *
+ * - get random category Ids
+ * - get data for each category
+ * - create HTML table
+ */
+async function setupAndStart() {
+  showLoadingView();
+
+  let categoryIds = await getCategoryIds();
+  categories = [];
+
+  for (let catId of categoryIds) {
+    categories.push(await getCategory(catId));
+  }
+
+  hideLoadingView();
+  fillTable();
+}
+
+/** On click of start / restart button, set up game. */
+$('#restart').on('click', setupAndStart);
+
+/** On page load, add event handler for clicking clues */
+$(async function () {
+  setupAndStart();
 });
-
-// Event listener for the restart button
-restartButton.addEventListener("click", initializeGameBoard);
-
-// Initialize the game board
-initializeGameBoard();
